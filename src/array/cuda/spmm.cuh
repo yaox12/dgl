@@ -33,10 +33,11 @@ inline bool cusparse_available(bool more_nnz_than_matrix_size) {
       (std::is_same<DType, float>::value || std::is_same<DType, double>::value))
     return true;
   return false;
-#else
+#elif CUSPARSE_VERSION < 12001
   if (std::is_same<DType, __half>::value ||
       std::is_same<DType, __nv_bfloat16>::value)
     return false;  // cusparse's SpMM on fp16 is slow, temporally disabled.
+#else
   // If the CSR matrix has more NNZ than matrix size, we should not use
   // cuSPARSE 11.1.
   return !more_nnz_than_matrix_size;
@@ -240,17 +241,18 @@ void CusparseCsrmm2(
       &matB, k, n, n, const_cast<DType*>(B_data), dtype, CUSPARSE_ORDER_ROW));
   CUSPARSE_CALL(
       cusparseCreateDnMat(&matC, m, n, n, C_data, dtype, CUSPARSE_ORDER_ROW));
-
+  auto computeType = dtype;
+  if (dtype == CUDA_R_16F || dtype == CUDA_R_16BF) computeType = CUDA_R_32F;
   auto transA = CUSPARSE_OPERATION_NON_TRANSPOSE;
   auto transB = CUSPARSE_OPERATION_NON_TRANSPOSE;
   size_t workspace_size;
   CUSPARSE_CALL(cusparseSpMM_bufferSize(
       thr_entry->cusparse_handle, transA, transB, &alpha, matA, matB, &beta,
-      matC, dtype, CUSPARSE_SPMM_CSR_ALG2, &workspace_size));
+      matC, computeType, CUSPARSE_SPMM_CSR_ALG2, &workspace_size));
   void* workspace = device->AllocWorkspace(ctx, workspace_size);
   CUSPARSE_CALL(cusparseSpMM(
       thr_entry->cusparse_handle, transA, transB, &alpha, matA, matB, &beta,
-      matC, dtype, CUSPARSE_SPMM_CSR_ALG2, workspace));
+      matC, computeType, CUSPARSE_SPMM_CSR_ALG2, workspace));
   device->FreeWorkspace(ctx, workspace);
 
   CUSPARSE_CALL(cusparseDestroySpMat(matA));
@@ -562,8 +564,8 @@ __global__ void SpMMCmpCsrHeteroKernel(
     int tx = blockIdx.x * blockDim.x + threadIdx.x;
     while (tx < out_len) {
       using accum_type = typename accum_dtype<DType>::type;
-      accum_type local_accum = static_cast<accum_type>(
-          out[ty * out_len + tx]);  // ReduceOp::zero();
+      accum_type local_accum =
+          static_cast<accum_type>(out[ty * out_len + tx]);  // ReduceOp::zero();
       Idx local_argu = 0, local_arge = 0;
       const int lhs_add = UseBcast ? ubcast_off[tx] : tx;
       const int rhs_add = UseBcast ? ebcast_off[tx] : tx;
@@ -620,7 +622,7 @@ void SpMMCoo(
     NDArray out, NDArray argu, NDArray arge) {
   /**
    * TODO(Xin): Disable half precision for SpMMCoo due to the round-off error.
-   * We should use fp32 for the accumulation but it's hard to modify the 
+   * We should use fp32 for the accumulation but it's hard to modify the
    * current implementation.
    */
 #if BF16_ENABLED
