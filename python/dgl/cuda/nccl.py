@@ -10,14 +10,13 @@ def sparse_all_to_all_push(idx, value, partition):
     corresponding to the current process, will copied into the output
     arrays.
 
-    Note: This method requires 'torch.distributed.is_initialized()' and
-    'torch.distributed.get_backend() == "nccl"'.
+    Note: This method requires 'torch.distributed.get_backend() == "nccl"'.
 
     Parameters
     ----------
-    idx : tensor
+    idx : torch.Tensor
         The 1D set of indices to send to other processors.
-    value : tensor
+    value : torch.Tensor
         The multi-dimension set of values to send to other processors.
         The first dimension must match that of `idx`.
     partition : NDArrayPartition
@@ -26,9 +25,9 @@ def sparse_all_to_all_push(idx, value, partition):
 
     Returns
     -------
-    tensor
+    torch.Tensor
         The 1D tensor of the recieved indices.
-    tensor
+    torch.Tensor
         The set of recieved values.
 
     Examples
@@ -39,7 +38,7 @@ def sparse_all_to_all_push(idx, value, partition):
     striped across processes can be generated via:
 
     >>> from dgl.partition import NDArrayPartition
-    >>> part = NDArrayPartition(g.num_nodes(), world_size, mode='remainder' )
+    >>> part = NDArrayPartition(g.num_nodes(), world_size, mode='remainder')
 
     With this partition, each processor can send values to be associatd
     with vertices in the graph. So if we have an array `global_idxs` of all of
@@ -61,6 +60,9 @@ def sparse_all_to_all_push(idx, value, partition):
     """
     if not dist.is_initialized() or dist.get_world_size() == 1:
         return idx, value
+    assert (
+        dist.get_backend() == "nccl"
+    ), "requires NCCL backend to communicate CUDA tensors."
 
     perm, send_splits = partition.generate_permutation(idx)
     perm = perm.long()
@@ -72,7 +74,6 @@ def sparse_all_to_all_push(idx, value, partition):
     # Use pinned memory to speedup D2H copy.
     recv_splits = recv_splits.to("cpu", non_blocking=True)
     send_splits = send_splits.to("cpu", non_blocking=True)
-    # TODO(Xin): Overlap D2H copy and index selection.
     send_idx = idx[perm]
     send_value = value[perm]
     # Wait D2H copy finish.
@@ -98,11 +99,13 @@ def sparse_all_to_all_pull(req_idx, value, partition):
     """Perform an all-to-all-v operation, where by all processors request
     the values corresponding to their set of indices.
 
+    Note: This method requires 'torch.distributed.get_backend() == "nccl"'.
+
     Parameters
     ----------
-    req_idx : IdArray
+    req_idx : torch.Tensor
         The set of indices this processor is requesting.
-    value : NDArray
+    value : torch.Tensor
         The multi-dimension set of values that can be requested from
         this processor.
     partition : NDArrayPartition
@@ -111,7 +114,7 @@ def sparse_all_to_all_pull(req_idx, value, partition):
 
     Returns
     -------
-    tensor
+    torch.Tensor
         The set of recieved values, corresponding to `req_idx`.
 
     Examples
@@ -122,7 +125,7 @@ def sparse_all_to_all_pull(req_idx, value, partition):
     striped across processes can be generated via:
 
     >>> from dgl.partition import NDArrayPartition
-    >>> part = NDArrayPartition(g.num_nodes(), world_size, mode='remainder' )
+    >>> part = NDArrayPartition(g.num_nodes(), world_size, mode='remainder')
 
     With this partition, each processor can request values/features
     associated with vertices in the graph. So in the case where we have
@@ -140,6 +143,9 @@ def sparse_all_to_all_pull(req_idx, value, partition):
     """
     if not dist.is_initialized() or dist.get_world_size() == 1:
         return value[req_idx.long()]
+    assert (
+        dist.get_backend() == "nccl"
+    ), "requires NCCL backend to communicate CUDA tensors."
 
     perm, req_splits = partition.generate_permutation(req_idx)
     perm = perm.long()
@@ -151,7 +157,6 @@ def sparse_all_to_all_pull(req_idx, value, partition):
     # Use pinned memory to speedup D2H copy.
     resp_splits = resp_splits.to("cpu", non_blocking=True)
     req_splits = req_splits.to("cpu", non_blocking=True)
-    # TODO(Xin): Overlap D2H copy and index selection.
     req_idx = req_idx[perm]
     # Wait D2H copy finish.
     torch.cuda.current_stream().synchronize()
